@@ -194,6 +194,7 @@ func fetchFromOrgDefaults(ctx context.Context, client *GitHubClient, cfg *Config
 	for attempt := 0; attempt < 10; attempt++ {
 		time.Sleep(2 * time.Second)
 
+		var err error
 		labels, err = client.ListLabels(ctx, cfg.Org, cfg.TempRepoName)
 		if err != nil {
 			return nil, tempRepoCreated, fmt.Errorf("failed to fetch labels from temp repo: %w", err)
