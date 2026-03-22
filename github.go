@@ -135,6 +135,15 @@ func (g *GitHubClient) DeleteLabel(ctx context.Context, owner, repo, name string
 	})
 }
 
+// IsOrganization checks whether the given owner is a GitHub organization.
+func (g *GitHubClient) IsOrganization(ctx context.Context, owner string) (bool, error) {
+	user, _, err := g.client.Users.Get(ctx, owner)
+	if err != nil {
+		return false, fmt.Errorf("failed to look up %q: %w", owner, err)
+	}
+	return user.GetType() == "Organization", nil
+}
+
 // ListOrgRepos returns all repo names in an org, optionally filtering forks and archived repos.
 func (g *GitHubClient) ListOrgRepos(ctx context.Context, org string, includeForks, includeArchived bool) ([]string, error) {
 	var allRepos []string

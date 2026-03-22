@@ -14,16 +14,16 @@ import (
 
 // Config holds all CLI configuration.
 type Config struct {
-	Org             string
+	Org             string // derived from --all-repos or --repo, not a flag
 	DryRun          bool
 	Verbose         bool
 	NoDelete        bool
-	AllRepos        bool
+	AllRepos        string // owner_name; empty means single-repo mode
 	IncludeForks    bool
 	IncludeArchived bool
 	CopyFrom        string
 	TempRepoName    string
-	TargetRepos     []string
+	Repos           []string // owner/repo for single repo mode (repeatable)
 	ExcludeRepos    []string
 }
 
@@ -36,9 +36,7 @@ type Stats struct {
 	Errors        int
 }
 
-func main() {
-	cfg := &Config{}
-
+func buildCommand(cfg *Config) *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "ghlabels [flags]",
 		Short: "Sync GitHub labels across repositories in an organization",
@@ -53,17 +51,31 @@ or copied from an existing repository.`,
 	}
 
 	f := rootCmd.Flags()
-	f.StringVarP(&cfg.Org, "org", "o", "kc-workspace", "Organization name")
-	f.BoolVarP(&cfg.DryRun, "dry-run", "n", false, "Show what would change without making changes")
-	f.StringArrayVarP(&cfg.TargetRepos, "repo", "r", nil, "Sync specific repo(s) (repeatable)")
-	f.BoolVarP(&cfg.AllRepos, "all-repos", "a", false, "Sync all repos in the organization")
-	f.StringArrayVarP(&cfg.ExcludeRepos, "exclude", "e", nil, "Exclude repo(s) from sync (repeatable)")
-	f.StringVar(&cfg.CopyFrom, "copy-from", "", "Copy labels from an existing repo instead of org defaults")
-	f.BoolVar(&cfg.IncludeForks, "include-forks", false, "Include forked repos (excluded by default)")
-	f.BoolVar(&cfg.IncludeArchived, "include-archived", false, "Include archived repos (excluded by default)")
-	f.BoolVar(&cfg.NoDelete, "no-delete", false, "Skip deleting labels absent from source")
-	f.StringVar(&cfg.TempRepoName, "temp-repo", ".github-label-sync-temp", "Temp repo name for reading org defaults")
+
+	// Global flags
 	f.BoolVarP(&cfg.Verbose, "verbose", "v", false, "Verbose output")
+	f.BoolVar(&cfg.NoDelete, "no-delete", false, "Skip deleting labels absent from source")
+	f.BoolVarP(&cfg.DryRun, "dry-run", "n", false, "Show what would change without making changes")
+
+	// Repo label flags
+	f.StringVarP(&cfg.CopyFrom, "copy-from", "c", "", "Copy labels from an existing repo (owner/repo)")
+	f.StringVar(&cfg.TempRepoName, "temp-repo", ".github-kamontat-ghlabels", "Temp repo name for reading org defaults")
+
+	// All repos flags
+	f.StringVarP(&cfg.AllRepos, "all-repos", "a", "", "Sync all repos in the given owner/org")
+	f.BoolVar(&cfg.IncludeArchived, "include-archived", false, "Include archived repos (excluded by default)")
+	f.BoolVar(&cfg.IncludeForks, "include-forks", false, "Include forked repos (excluded by default)")
+	f.StringArrayVarP(&cfg.ExcludeRepos, "exclude", "e", nil, "Exclude repo(s) from sync (repeatable)")
+
+	// Single repo flag
+	f.StringArrayVarP(&cfg.Repos, "repo", "r", nil, "Sync specific repo(s) (owner/repo, repeatable)")
+
+	return rootCmd
+}
+
+func main() {
+	cfg := &Config{}
+	rootCmd := buildCommand(cfg)
 
 	if err := rootCmd.Execute(); err != nil {
 		logError("%s", err)
@@ -71,12 +83,34 @@ or copied from an existing repository.`,
 	}
 }
 
-func run(cfg *Config) error {
-	if len(cfg.TargetRepos) == 0 && !cfg.AllRepos {
-		return fmt.Errorf("no target repos specified; use --repo REPO or --all-repos")
+// validateConfig validates flag combinations and derives cfg.Org.
+func validateConfig(cfg *Config) error {
+	if len(cfg.Repos) == 0 && cfg.AllRepos == "" {
+		return fmt.Errorf("no target repos specified; use --repo owner/repo or --all-repos owner")
 	}
-	if len(cfg.TargetRepos) > 0 && cfg.AllRepos {
+	if len(cfg.Repos) > 0 && cfg.AllRepos != "" {
 		return fmt.Errorf("--repo and --all-repos are mutually exclusive")
+	}
+
+	// Derive Org from flags
+	if cfg.AllRepos != "" {
+		cfg.Org = cfg.AllRepos
+	} else {
+		// Validate all --repo values are owner/repo format
+		for _, r := range cfg.Repos {
+			if !strings.Contains(r, "/") {
+				return fmt.Errorf("--repo must be in owner/repo format, got %q", r)
+			}
+		}
+		parts := strings.SplitN(cfg.Repos[0], "/", 2)
+		cfg.Org = parts[0]
+	}
+	return nil
+}
+
+func run(cfg *Config) error {
+	if err := validateConfig(cfg); err != nil {
+		return err
 	}
 
 	if cfg.DryRun {
@@ -91,6 +125,19 @@ func run(cfg *Config) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Validate that the owner is an organization when required
+	// (--all-repos uses ListByOrg; org defaults create a temp repo under the org)
+	needsOrg := cfg.AllRepos != "" || cfg.CopyFrom == ""
+	if needsOrg {
+		isOrg, err := client.IsOrganization(ctx, cfg.Org)
+		if err != nil {
+			return err
+		}
+		if !isOrg {
+			return fmt.Errorf("%q is not a GitHub organization", cfg.Org)
+		}
+	}
 
 	// Track temp repo for cleanup
 	tempRepoCreated := false
@@ -218,8 +265,14 @@ func fetchFromOrgDefaults(ctx context.Context, client *GitHubClient, cfg *Config
 }
 
 func listTargetRepos(ctx context.Context, client *GitHubClient, cfg *Config) ([]string, error) {
-	if !cfg.AllRepos {
-		return cfg.TargetRepos, nil
+	if cfg.AllRepos == "" {
+		// Extract repo names from owner/repo values
+		repos := make([]string, len(cfg.Repos))
+		for i, r := range cfg.Repos {
+			parts := strings.SplitN(r, "/", 2)
+			repos[i] = parts[1]
+		}
+		return repos, nil
 	}
 
 	logInfo("Listing repos in %s...", cfg.Org)

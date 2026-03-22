@@ -24,6 +24,9 @@ jobs:
       - name: Build
         run: go build -o ghlabels .
 
+      - name: Test
+        run: go test ./... -v
+
       - name: Vet
         run: go vet ./...
 

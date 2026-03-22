@@ -23,35 +23,15 @@ archives:
       - goos: windows
         format: zip
 
-dockers:
-  - image_templates:
-      - "ghcr.io/kamontat/{{ .ProjectName }}:{{ .Version }}-amd64"
-      - "ghcr.io/kamontat/{{ .ProjectName }}:latest-amd64"
-    use: buildx
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/amd64"
-    goarch: amd64
-
-  - image_templates:
-      - "ghcr.io/kamontat/{{ .ProjectName }}:{{ .Version }}-arm64"
-      - "ghcr.io/kamontat/{{ .ProjectName }}:latest-arm64"
-    use: buildx
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--platform=linux/arm64"
-    goarch: arm64
-
-docker_manifests:
-  - name_template: "ghcr.io/kamontat/{{ .ProjectName }}:{{ .Version }}"
-    image_templates:
-      - "ghcr.io/kamontat/{{ .ProjectName }}:{{ .Version }}-amd64"
-      - "ghcr.io/kamontat/{{ .ProjectName }}:{{ .Version }}-arm64"
-
-  - name_template: "ghcr.io/kamontat/{{ .ProjectName }}:latest"
-    image_templates:
-      - "ghcr.io/kamontat/{{ .ProjectName }}:latest-amd64"
-      - "ghcr.io/kamontat/{{ .ProjectName }}:latest-arm64"
+dockers_v2:
+  - images:
+      - "ghcr.io/kamontat/{{ .ProjectName }}"
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
 
 changelog:
   sort: asc
