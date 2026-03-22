@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build -o ghlabels .
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Verify help
+        run: ./ghlabels --help
+
+      - name: Dry-run sync against this repo
+        run: ./ghlabels --copy-from ${{ github.repository }} --repo ${{ github.repository }} --dry-run --verbose
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
