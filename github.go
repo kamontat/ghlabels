@@ -144,6 +144,17 @@ func (g *GitHubClient) IsOrganization(ctx context.Context, owner string) (bool, 
 	return user.GetType() == "Organization", nil
 }
 
+// CanManageRepos checks whether the authenticated user has permission to create and delete
+// repos in the given organization (requires admin or owner role).
+func (g *GitHubClient) CanManageRepos(ctx context.Context, org string) (bool, error) {
+	membership, _, err := g.client.Organizations.GetOrgMembership(ctx, "", org)
+	if err != nil {
+		return false, err
+	}
+	role := membership.GetRole()
+	return role == "admin" || role == "owner", nil
+}
+
 // ListOrgRepos returns all repo names in an org, optionally filtering forks and archived repos.
 func (g *GitHubClient) ListOrgRepos(ctx context.Context, org string, includeForks, includeArchived bool) ([]string, error) {
 	var allRepos []string

@@ -25,6 +25,16 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: "--repo and --all-repos are mutually exclusive",
 		},
 		{
+			name:    "copy-from-repo and copy-from-org mutually exclusive",
+			cfg:     Config{Repos: []string{"org/repo"}, CopyFromRepo: "org/src", CopyFromOrg: "other-org"},
+			wantErr: "--copy-from-repo and --copy-from-org are mutually exclusive",
+		},
+		{
+			name:    "copy-from-repo must be owner/repo format",
+			cfg:     Config{Repos: []string{"org/repo"}, CopyFromRepo: "just-repo"},
+			wantErr: "--copy-from-repo must be in owner/repo format",
+		},
+		{
 			name:    "repo missing slash",
 			cfg:     Config{Repos: []string{"just-repo"}},
 			wantErr: "--repo must be in owner/repo format",
@@ -121,7 +131,7 @@ func TestFlagParsing(t *testing.T) {
 	}{
 		{
 			name: "short flags",
-			args: []string{"-r", "org/repo", "-n", "-v", "-c", "org/source", "-e", "skip"},
+			args: []string{"-r", "org/repo", "-n", "-v", "-e", "skip"},
 			check: func(t *testing.T, cfg *Config) {
 				if len(cfg.Repos) != 1 || cfg.Repos[0] != "org/repo" {
 					t.Errorf("Repos = %v, want [org/repo]", cfg.Repos)
@@ -132,9 +142,6 @@ func TestFlagParsing(t *testing.T) {
 				if !cfg.Verbose {
 					t.Error("Verbose should be true")
 				}
-				if cfg.CopyFrom != "org/source" {
-					t.Errorf("CopyFrom = %q, want %q", cfg.CopyFrom, "org/source")
-				}
 				if len(cfg.ExcludeRepos) != 1 || cfg.ExcludeRepos[0] != "skip" {
 					t.Errorf("ExcludeRepos = %v, want [skip]", cfg.ExcludeRepos)
 				}
@@ -143,11 +150,14 @@ func TestFlagParsing(t *testing.T) {
 		{
 			name: "long flags",
 			args: []string{"--repo", "org/repo", "--dry-run", "--verbose", "--no-delete",
-				"--copy-from", "org/src", "--include-archived", "--include-forks",
+				"--copy-from-repo", "org/src", "--include-archived", "--include-forks",
 				"--exclude", "x", "--temp-repo", "my-temp", "--all-repos", "myorg"},
 			check: func(t *testing.T, cfg *Config) {
 				if cfg.AllRepos != "myorg" {
 					t.Errorf("AllRepos = %q, want %q", cfg.AllRepos, "myorg")
+				}
+				if cfg.CopyFromRepo != "org/src" {
+					t.Errorf("CopyFromRepo = %q, want %q", cfg.CopyFromRepo, "org/src")
 				}
 				if !cfg.NoDelete {
 					t.Error("NoDelete should be true")
@@ -160,6 +170,15 @@ func TestFlagParsing(t *testing.T) {
 				}
 				if cfg.TempRepoName != "my-temp" {
 					t.Errorf("TempRepoName = %q, want %q", cfg.TempRepoName, "my-temp")
+				}
+			},
+		},
+		{
+			name: "copy-from-org flag",
+			args: []string{"--repo", "org/repo", "--copy-from-org", "other-org"},
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.CopyFromOrg != "other-org" {
+					t.Errorf("CopyFromOrg = %q, want %q", cfg.CopyFromOrg, "other-org")
 				}
 			},
 		},

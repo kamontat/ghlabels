@@ -21,7 +21,8 @@ type Config struct {
 	AllRepos        string // owner_name; empty means single-repo mode
 	IncludeForks    bool
 	IncludeArchived bool
-	CopyFrom        string
+	CopyFromRepo    string // owner/repo to copy labels from
+	CopyFromOrg     string // org name to copy default labels from
 	TempRepoName    string
 	Repos           []string // owner/repo for single repo mode (repeatable)
 	ExcludeRepos    []string
@@ -57,8 +58,9 @@ or copied from an existing repository.`,
 	f.BoolVar(&cfg.NoDelete, "no-delete", false, "Skip deleting labels absent from source")
 	f.BoolVarP(&cfg.DryRun, "dry-run", "n", false, "Show what would change without making changes")
 
-	// Repo label flags
-	f.StringVarP(&cfg.CopyFrom, "copy-from", "c", "", "Copy labels from an existing repo (owner/repo)")
+	// Label source flags
+	f.StringVar(&cfg.CopyFromRepo, "copy-from-repo", "", "Copy labels from an existing repo (owner/repo)")
+	f.StringVar(&cfg.CopyFromOrg, "copy-from-org", "", "Copy default labels from an organization")
 	f.StringVar(&cfg.TempRepoName, "temp-repo", ".github-kamontat-ghlabels", "Temp repo name for reading org defaults")
 
 	// All repos flags
@@ -90,6 +92,12 @@ func validateConfig(cfg *Config) error {
 	}
 	if len(cfg.Repos) > 0 && cfg.AllRepos != "" {
 		return fmt.Errorf("--repo and --all-repos are mutually exclusive")
+	}
+	if cfg.CopyFromRepo != "" && cfg.CopyFromOrg != "" {
+		return fmt.Errorf("--copy-from-repo and --copy-from-org are mutually exclusive")
+	}
+	if cfg.CopyFromRepo != "" && !strings.Contains(cfg.CopyFromRepo, "/") {
+		return fmt.Errorf("--copy-from-repo must be in owner/repo format, got %q", cfg.CopyFromRepo)
 	}
 
 	// Derive Org from flags
@@ -126,10 +134,15 @@ func run(cfg *Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Validate that the owner is an organization when required
-	// (--all-repos uses ListByOrg; org defaults create a temp repo under the org)
-	needsOrg := cfg.AllRepos != "" || cfg.CopyFrom == ""
-	if needsOrg {
+	// Determine the org used for fetching default labels (if needed)
+	sourceOrg := cfg.CopyFromOrg
+	if sourceOrg == "" && cfg.CopyFromRepo == "" {
+		// No explicit source; use target org's defaults
+		sourceOrg = cfg.Org
+	}
+
+	// Validate that the target owner is an organization when using --all-repos
+	if cfg.AllRepos != "" {
 		isOrg, err := client.IsOrganization(ctx, cfg.Org)
 		if err != nil {
 			return err
@@ -139,21 +152,42 @@ func run(cfg *Config) error {
 		}
 	}
 
+	// Validate source org when fetching org defaults
+	if sourceOrg != "" {
+		isOrg, err := client.IsOrganization(ctx, sourceOrg)
+		if err != nil {
+			return err
+		}
+		if !isOrg {
+			return fmt.Errorf("%q is not a GitHub organization", sourceOrg)
+		}
+
+		// Verify the user has permission to create/delete repos in the source org
+		canManage, err := client.CanManageRepos(ctx, sourceOrg)
+		if err != nil {
+			return fmt.Errorf("failed to check permissions on %q: %w", sourceOrg, err)
+		}
+		if !canManage {
+			return fmt.Errorf("you do not have permission to create/delete repos in %q (required to read org default labels)", sourceOrg)
+		}
+	}
+
 	// Track temp repo for cleanup
 	tempRepoCreated := false
+	tempRepoOrg := sourceOrg
 	defer func() {
 		if tempRepoCreated {
-			logInfo("Cleaning up temp repo %s/%s...", cfg.Org, cfg.TempRepoName)
-			_ = client.DeleteRepo(context.Background(), cfg.Org, cfg.TempRepoName)
+			logInfo("Cleaning up temp repo %s/%s...", tempRepoOrg, cfg.TempRepoName)
+			_ = client.DeleteRepo(context.Background(), tempRepoOrg, cfg.TempRepoName)
 		}
 	}()
 
 	// Fetch source labels
 	var sourceLabels []Label
-	if cfg.CopyFrom != "" {
+	if cfg.CopyFromRepo != "" {
 		sourceLabels, err = fetchFromRepo(ctx, client, cfg)
 	} else {
-		sourceLabels, tempRepoCreated, err = fetchFromOrgDefaults(ctx, client, cfg)
+		sourceLabels, tempRepoCreated, err = fetchFromOrgDefaults(ctx, client, cfg, sourceOrg)
 	}
 	if err != nil {
 		return err
@@ -214,10 +248,7 @@ func run(cfg *Config) error {
 }
 
 func fetchFromRepo(ctx context.Context, client *GitHubClient, cfg *Config) ([]Label, error) {
-	source := cfg.CopyFrom
-	if !strings.Contains(source, "/") {
-		source = cfg.Org + "/" + source
-	}
+	source := cfg.CopyFromRepo
 	parts := strings.SplitN(source, "/", 2)
 	logInfo("Fetching labels from %s...", source)
 	labels, err := client.ListLabels(ctx, parts[0], parts[1])
@@ -227,9 +258,9 @@ func fetchFromRepo(ctx context.Context, client *GitHubClient, cfg *Config) ([]La
 	return labels, nil
 }
 
-func fetchFromOrgDefaults(ctx context.Context, client *GitHubClient, cfg *Config) ([]Label, bool, error) {
-	logInfo("Creating temp repo %s/%s to read org default labels...", cfg.Org, cfg.TempRepoName)
-	if err := client.CreatePrivateRepo(ctx, cfg.Org, cfg.TempRepoName, "Temporary repo for label sync - will be auto-deleted"); err != nil {
+func fetchFromOrgDefaults(ctx context.Context, client *GitHubClient, cfg *Config, sourceOrg string) ([]Label, bool, error) {
+	logInfo("Creating temp repo %s/%s to read org default labels...", sourceOrg, cfg.TempRepoName)
+	if err := client.CreatePrivateRepo(ctx, sourceOrg, cfg.TempRepoName, "Temporary repo for label sync - will be auto-deleted"); err != nil {
 		return nil, false, fmt.Errorf("failed to create temp repo: %w", err)
 	}
 	tempRepoCreated := true
@@ -242,7 +273,7 @@ func fetchFromOrgDefaults(ctx context.Context, client *GitHubClient, cfg *Config
 		time.Sleep(2 * time.Second)
 
 		var err error
-		labels, err = client.ListLabels(ctx, cfg.Org, cfg.TempRepoName)
+		labels, err = client.ListLabels(ctx, sourceOrg, cfg.TempRepoName)
 		if err != nil {
 			return nil, tempRepoCreated, fmt.Errorf("failed to fetch labels from temp repo: %w", err)
 		}
@@ -255,7 +286,7 @@ func fetchFromOrgDefaults(ctx context.Context, client *GitHubClient, cfg *Config
 	}
 
 	logInfo("Deleting temp repo...")
-	if err := client.DeleteRepo(ctx, cfg.Org, cfg.TempRepoName); err != nil {
+	if err := client.DeleteRepo(ctx, sourceOrg, cfg.TempRepoName); err != nil {
 		logWarn("Failed to delete temp repo immediately; cleanup will handle it")
 	} else {
 		tempRepoCreated = false

@@ -68,7 +68,7 @@ This project also relies on manual testing with `--dry-run` mode. When testing c
 
 - Always use `--dry-run` first to verify what would change without modifying anything.
 - Use `--verbose` to see detailed output.
-- Test both `--copy-from` (copy from an existing repo) and org default label flows.
+- Test `--copy-from-repo` (copy from an existing repo), `--copy-from-org` (copy from another org's defaults), and implicit org default label flows.
 - Test with `--repo` (single target) and `--all-repos` (bulk).
 - Verify edge cases: empty label sets, repos with no labels, `--no-delete` behavior.
 
@@ -77,7 +77,10 @@ This project also relies on manual testing with `--dry-run` mode. When testing c
 ./ghlabels --repo test-repo --dry-run --verbose
 
 # Preview sync from another repo
-./ghlabels --copy-from source-repo --repo test-repo --dry-run --verbose
+./ghlabels --copy-from-repo my-org/source-repo --repo my-org/test-repo --dry-run --verbose
+
+# Preview sync from another org's defaults
+./ghlabels --copy-from-org other-org --repo my-org/test-repo --dry-run --verbose
 
 # Preview bulk sync with exclusions
 ./ghlabels --all-repos --exclude important-repo --dry-run
